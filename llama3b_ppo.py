@@ -5,13 +5,13 @@ import os
 from tqdm import tqdm
 import pymorphy3
 from datasets import Dataset
-from transformers import AutoTokenizer, 
+from transformers import AutoTokenizer
 from trl import PPOConfig, PPOTrainer, AutoModelForCausalLMWithValueHead
 from peft import PeftModel
 
 # Пути к базовой модели и к LoRA адаптеру
 base_model_path = "/home/jovyan/Effective_transmission_semantic_information/Diploma/hub/models--google--gemma-2-9b-it/snapshots/11c9b309abf73637e4b6f9a3fa1e92e615547819"
-adapter_path = "./finetuned_gemma"  # В этой папке находится только LoRA адаптер
+base_model_path = "ai-forever/rugpt3small_based_on_gpt2"
 
 # Загружаем токенизатор (лучше брать из базовой модели)
 tokenizer = AutoTokenizer.from_pretrained(base_model_path)
@@ -19,21 +19,16 @@ tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "left" 
 
 # Загружаем базовую модель с value head
-base_model = AutoModelForCausalLMWithValueHead.from_pretrained(
+model = AutoModelForCausalLMWithValueHead.from_pretrained(
     base_model_path,
     device_map="cuda"
 )
 
-# Подгружаем LoRA адаптер на базовую модель
-model = PeftModel.from_pretrained(base_model, adapter_path)
-model.enable_input_require_grads()
-
-# Загружаем референсную модель: та же базовая модель + адаптер, затем замораживаем параметры
-base_ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(
+ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(
     base_model_path,
     device_map="cuda"
 )
-ref_model = PeftModel.from_pretrained(base_ref_model, adapter_path)
+#ref_model = PeftModel.from_pretrained(base_ref_model, adapter_path)
 ref_model.eval()
 for param in ref_model.parameters():
     param.requires_grad = False
@@ -88,7 +83,7 @@ def reward_function(
             f"Длина модели: {response_length}, Длина оригинала: {original_length}\n"
             f"Количество запрещённых слов: {offensive_count}\n"
             f"Reward: {reward}\n\n"
-        )
+            )
         rewards.append(reward)
     return rewards
 
@@ -147,66 +142,33 @@ def collate_fn(batch):
         "labels": torch.stack(labels),
         "prompt_text": [x["prompt_text"] for x in batch],
         "completion_text": [x["completion_text"] for x in batch]
-    }
+            }
 
-# Конфигурация PPO (используем имя базовой модели для конфигурации)
-ppo_config = PPOConfig(
-    model_name=base_model_path,
-    learning_rate=1e-5,
-    batch_size=32,
-    mini_batch_size=8,
-    gradient_accumulation_steps=4,
-    ppo_epochs=4,
-)
+# # Конфигурация PPO (используем имя базовой модели для конфигурации)
+# ppo_config = PPOConfig(
+#     model_name=model,
+#     learning_rate=1e-5,
+#     batch_size=32,
+#     mini_batch_size=8,
+#     gradient_accumulation_steps=4,
+#     ppo_epochs=4,
+# )
 
-# Инициализируем PPOTrainer
-ppo_trainer = PPOTrainer(
-    config=ppo_config,
-    model=model,
-    ref_model=ref_model,
-    tokenizer=tokenizer,
-    dataset=dataset,
-    data_collator=collate_fn
-)
+# # Инициализируем PPOTrainer
+# ppo_trainer = PPOTrainer(
+#     config=ppo_config,
+#     model=model,
+#     ref_model=ref_model,
+#     tokenizer=tokenizer,
+#     dataset=dataset,
+#     data_collator=collate_fn
+# )
 
-generation_kwargs = {
-    "min_length": -1,
-    "top_k": 0,
-    "top_p": 1.0,
-    "do_sample": True,
-    "pad_token_id": tokenizer.eos_token_id,
-    "max_new_tokens": 128,
-}
-
-# Цикл обучения PPO
-for epoch in tqdm(range(ppo_config.ppo_epochs), desc="Epochs"):
-    for i, batch in enumerate(ppo_trainer.dataloader):
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        
-        with torch.no_grad():
-            response_tensors = model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                **generation_kwargs
-            )
-        
-        responses = [tokenizer.decode(r, skip_special_tokens=True) for r in response_tensors]
-        original_texts = batch["prompt_text"]
-        reference_texts = batch["completion_text"]
-        rewards_list = reward_function(responses, special_words, reference_texts)
-        rewards = [torch.tensor(r, device=device, dtype=torch.float) for r in rewards_list]
-        
-        stats = ppo_trainer.step(
-            [ids for ids in input_ids],
-            [resp for resp in response_tensors],
-            rewards
-        )
-        
-        loss = stats.get("ppo_loss", None)
-        if loss is not None:
-            print(f"Epoch {epoch} - Iteration {i} - Loss: {loss}")
-
-# Сохраняем дообученный адаптер (и, при необходимости, всю модель)
-model.save_pretrained("ppo_gemma")
-tokenizer.save_pretrained("ppo_gemma")
+# generation_kwargs = {
+#     "min_length": -1,
+#     "top_k": 0,
+#     "top_p": 1.0,
+#     "do_sample": True,
+#     "pad_token_id": tokenizer.eos_token_id,
+#     "max_new_tokens": 128,
+# }
